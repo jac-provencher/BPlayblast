@@ -196,16 +196,33 @@ class BPlayblast(QtCore.QObject):
         self._encoder = encoder
 
     def set_h264_settings(self, quality, preset):
-        pass
+        if not quality in (h264_qualities := BPlayblast.H264_QUALITIES.keys()):
+            self.log_error(f"Invalid h264 quality: {quality}. Expected of {h264_qualities}")
+            return
+        
+        if preset not in (h264_presets := BPlayblast.H264_PRESETS):
+            self.log_error(f"Invalid h264 preset: {preset}. Expected of {h264_presets}")
+            return
+        
+        self._h264_quality = quality
+        self._h264_preset = preset
 
     def get_h264_settings(self):
-        pass
+        return {
+            "quality": self._h264_quality,
+            "preset": self._h264_preset
+        }
 
     def set_image_settings(self, quality):
-        pass
+        if 0 < quality <= 100:
+            self._image_quality = quality
+        else:
+            self.log_error(f"Invalid image quality: {quality}. Expected value betwenn 1-100")
 
     def get_image_settings(self):
-        pass
+        return {
+            "quality": self._image_quality
+        }
  
     def set_frame_range(self, frame_range):
         resolve_frame_range = self.resolve_frame_range(frame_range)
