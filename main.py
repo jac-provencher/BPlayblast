@@ -126,8 +126,12 @@ class BPlayblast(QtCore.QObject):
         return True
 
     def set_resolution(self, resolution):
+
+        self._resolution_preset = None
+
         try:
             width_height = self.preset_to_resolution(resolution)
+            self._resolution_preset = resolution
         except:
             width_height = resolution
 
@@ -147,7 +151,13 @@ class BPlayblast(QtCore.QObject):
             self.log_error(f"Invalid resolution: {width_height}. Expected one of [int, int], {', '.join(presets)}")
             return
         
-        self._width_height = width_height
+        self._width_height = (width_height[0], width_height[1])
+
+    def get_resolution_width_height(self):
+        if self._resolution_preset:
+            return self.preset_to_resolution(self._resolution_preset)
+        
+        return self._width_height
 
     def preset_to_resolution(self, resolution_preset):
         """_summary_
@@ -183,7 +193,7 @@ class BPlayblast(QtCore.QObject):
         else:
             raise RuntimeError(f"Invalid frame range preset: {frame_range_preset}")
         
-        return [start_frame, end_frame]
+        return (start_frame, end_frame)
     
     def set_encoding(self, container_format, encoder):
         if container_format not in (containers := BPlayblast.VIDEO_ENCODER_LOOKUP.keys()):
@@ -229,8 +239,18 @@ class BPlayblast(QtCore.QObject):
         if not resolve_frame_range:
             return
         
+        self._frame_range_preset = None
+        if frame_range in BPlayblast.FRAME_RANGE_PRESETS:
+            self._frame_range_preset = frame_range
+        
         self._start_frame = resolve_frame_range[0]
         self._end_frame = resolve_frame_range[1]
+
+    def get_start_end_frame(self):
+        if self._frame_range_preset:
+            return self.preset_to_frame_range(self._frame_range_preset)
+        
+        return (self._start_frame, self._end_frame)
 
     def set_camera(self,  camera):  
         if camera and camera not in cmds.listCameras():
