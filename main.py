@@ -21,6 +21,8 @@ class BPlayblast(QtCore.QObject):
     DEFAULT_H264_PRESET = "fast"
     DEFAULT_IMAGE_QUALITY = 100
 
+    DEFAULT_PADDING = 4
+
     RESOLUTION_LOOKUP = {
         "Render":(),
         "HD 1080": (1920, 1080),
@@ -37,7 +39,7 @@ class BPlayblast(QtCore.QObject):
     VIDEO_ENCODER_LOOKUP = {
         "mov": ["h264"],
         "mp4": ["h264"],
-        "image": ["jpg", "png", "tif"]
+        "Image": ["jpg", "png", "tif"]
     }
 
     H264_QUALITIES = {
@@ -70,7 +72,7 @@ class BPlayblast(QtCore.QObject):
         self.set_frame_range(BPlayblast.DEFAULT_FRAME_RANGE)
 
         self.set_encoding(BPlayblast.DEFAULT_CONTAINER, BPlayblast.DEFAULT_ENCODER)
-        self.set_h264_settings(BPlayblast.DEFAULT_IMAGE_QUALITY, BPlayblast.DEFAULT_H264_PRESET)
+        self.set_h264_settings(BPlayblast.DEFAULT_H264_QUALITY, BPlayblast.DEFAULT_H264_PRESET)
         self.set_image_settings(BPlayblast.DEFAULT_IMAGE_QUALITY)
 
     def set_maya_logging_enabled(self, enabled):
@@ -319,7 +321,7 @@ class BPlayblast(QtCore.QObject):
             filename = filename.replace("{scene}", self.get_scene_name())
 
         return filename
-    
+
     def resolve_frame_range(self, frame_range):
         try:
             if type(frame_range) in [list, tuple]:
@@ -335,18 +337,21 @@ class BPlayblast(QtCore.QObject):
             self.log_error(f"Invalid frame range. Expected one of (start_frame, end_frame) or {', '.join(presets)}")
 
             return None
+        
+    def requires_ffmpeg(self):
+        return self._container_format != "Image"
 
     def execute(self, output_dir, filename, padding=4, show_ornaments=True, show_in_viewer=True, overwrite=False):
-        """This function is call when playblast button is clicked. It will executes the playblast process.
 
-        Args:
-            output_dir (str): directory where playblast content will be stored
-            filename (str): playblast content name
-            padding (int, optional): the amount of number in suffix for an image sequence. Defaults to 4.
-            show_ornaments (bool, optional): toggle on/off to show ornaments in the view. Defaults to True.
-            show_in_viewer (bool, optional): _description_. Defaults to True.
-            overwrite (bool, optional): toggle on/off if user wants to overwrite existing file. Defaults to False.
-        """
+        if self.requires_ffmpeg() and not self.validate_ffmpeg():
+            self.log_error("ffmpeg executable is not configured. See script editor for details.")
+            return
+        
+        viewport_model_panel = self.get_viewport_panel()
+        if not viewport_model_panel:
+            self.log_error("An active viewport is not selected. Select the viewport and retry")
+            return
+
         if not output_dir:
             self.log_error("Output directory path not set")
             return
@@ -356,18 +361,86 @@ class BPlayblast(QtCore.QObject):
 
         output_dir = self.resolve_output_directory_path(output_dir)
         filename = self.resolve_output_filename(filename)
+        
+        if padding <= 0:
+            padding = BPlayblast.DEFAULT_PADDING
 
-        self.log_output(f"Output directory: {output_dir}")
-        self.log_output(f"Output filename: {filename}")
+        if self.requires_ffmpeg():
+            output_path = os.path.normpath(os.path.join(output_dir, f"{filename}.{self._container_format}"))
+            if not overwrite and os.path.exists(output_path):
+                self.log_error(f"Output file already exists. Enable overwrite to ignore.")
+                return
 
-        if self.validate_ffmpeg():
-            self.log_output("TODO: execute playblast")
+            playblast_output_dir = f"{output_dir}/playblast_temp"
+            playblast_output = os.path.normpath(os.path.join(playblast_output_dir, filename))
+            force_overwrite = True
+            compression = "png"
+            image_quality = 100
+            index_from_zero = True
+            viewer = False
+
+        else:
+            playblast_output = os.path.normpath(os.path.join(output_dir, filename))
+            force_overwrite = overwrite
+            compression = self._encoder
+            image_quality = self._image_quality
+            index_from_zero = False
+            viewer = show_in_viewer 
+
+        width_height = self.get_resolution_width_height()
+        start_frame, end_frame = self.get_start_end_frame()
+        
+        options = {
+            "filename": playblast_output,
+            "widthHeight": width_height,
+            "percent": 100,
+            "startTime": start_frame,
+            "endTime": end_frame,
+            "clearCache": True,
+            "forceOverwrite": force_overwrite,
+            "format": "image",
+            "compression": compression,
+            "quality": image_quality,
+            "indexFromZero": index_from_zero,
+            "framePadding": padding,
+            "showOrnaments": show_ornaments,
+            "viewer": viewer
+        }
+
+        self.log_output(f"Playblast options: {options}")
+
+        # Store original viewport settings
+        orig_camera = self.get_active_camera()
+
+        camera = self._camera
+        if not camera:
+            camera = orig_camera
+
+        if not camera in cmds.listCameras():
+            self.log_error(f"Camera does not exists: {camera}")
+            return
+        
+        self.set_active_camera(camera)
+
+        playblast_failed = False
+        try:
+            cmds.playblast(**options)
+        except:
+            traceback.print_exc()
+            self.log_error("Failed to created playblast. See script editor for details")
+            playblast_failed = True
+        finally:
+            # Restore original viewport settings
+            self.set_active_camera(orig_camera)
+
+        if playblast_failed:
+            return
 
 
 if __name__ == "__main__":
 
     playblast = BPlayblast()
-    playblast.set_resolution(("allo", 20))
-
-    print(playblast._width_height)
+    playblast.set_camera("top")
+    playblast.set_encoding("Image", "jpg")
+    playblast.execute("E:/BASA", "output")
 
