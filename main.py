@@ -1,6 +1,7 @@
 import os
+import sys
 import traceback
-from PySide2 import QtCore
+from PySide2 import QtCore, QtGui
 import maya.cmds as cmds
 import maya.mel as mel
 import maya.OpenMaya as om
@@ -75,6 +76,8 @@ class BPlayblast(QtCore.QObject):
         self.set_h264_settings(BPlayblast.DEFAULT_H264_QUALITY, BPlayblast.DEFAULT_H264_PRESET)
         self.set_image_settings(BPlayblast.DEFAULT_IMAGE_QUALITY)
 
+        self.initialize_ffmpeg_process()
+
     def set_maya_logging_enabled(self, enabled):
         self._log_to_maya = enabled
 
@@ -97,38 +100,139 @@ class BPlayblast(QtCore.QObject):
         self.output_logged.emit(text)
 
     def set_ffmpeg_path(self, ffmpeg_path):
-        """_summary_
-
-        Args:
-            ffmpeg_path (_type_): _description_
-        """
         if ffmpeg_path:
             self._ffmpeg_path = ffmpeg_path
         else:
             self._ffmpeg_path = BPlayblast.DEFAULT_FFMPEG_PATH
 
     def get_ffmpeg_path(self):
-
         return self._ffmpeg_path
 
     def validate_ffmpeg(self):
-
         if not self._ffmpeg_path:
             self.log_error("ffmpeg executable path not set")
             return False
-
         elif not os.path.exists(self._ffmpeg_path):
             self.log_error(f"ffmpeg executable path does not exists: {self._ffmpeg_path}")
             return False
-
         elif os.path.isdir(self._ffmpeg_path):
             self.log_error(f"Invalid ffmpeg path: {self._ffmpeg_path}")
             return False
 
         return True
+    
+    def initialize_ffmpeg_process(self):
+        self._ffmpeg_process = QtCore.QProcess()
+        self._ffmpeg_process.readyReadStandardError.connect(self.process_ffmpeg_output)
+    
+    def execute_ffmpeg_cmd(self, command):
+        self._ffmpeg_process.start(command)
+        if self._ffmpeg_process.waitForStarted():
+            while self._ffmpeg_process.state() != QtCore.QProcess.NotRunning:
+                QtCore.QCoreApplication.processEvents()
+                QtCore.QThread.usleep(10)
+
+    def process_ffmpeg_output(self):
+        byte_array_output = self._ffmpeg_process.readAllStandardError()
+
+        if sys.version_info.major < 3:
+            output = str(byte_array_output)
+        else:
+            output = str(byte_array_output, "utf-8")
+        
+        self.log_output(output)
+    
+    def encode_h264(self, source_path, output_path, start_frame):
+        frame_rate = self.get_frame_rate()
+
+        audio_file_path, audio_frame_offset = self.get_audio_attributes()
+        if audio_file_path:
+            audio_offset = self.get_audio_offset_in_sec(start_frame, audio_frame_offset, frame_rate)
+
+        crf = BPlayblast.H264_QUALITIES[self._h264_quality]
+        preset = self._h264_preset
+
+        ffmpeg_cmd = self._ffmpeg_path
+        ffmpeg_cmd += f' -y -framerate {frame_rate} -i "{source_path}"'
+
+        if audio_file_path:
+            ffmpeg_cmd += f' -ss {audio_offset} -i "{audio_file_path}"'
+        
+        ffmpeg_cmd += f' -c:v libx264 -crf:v {crf} -preset:v {preset} -profile high -level 4.0 -pix_fmt yuv420p'
+
+        if audio_file_path:
+            ffmpeg += f' -filter_complex "[1:0] apad" -shortest'
+
+        ffmpeg_cmd += f' "{output_path}"'
+
+        self.log_output(ffmpeg_cmd)
+
+        self.execute_ffmpeg_cmd(ffmpeg_cmd)
+
+    def get_frame_rate(self):
+        rate_str = cmds.currentUnit(q=True, time=True)
+
+        if rate_str == "game":
+            frame_rate = 15.0
+        elif rate_str == "film":
+            frame_rate = 24.0
+        elif rate_str == "pal":
+            frame_rate = 25.0
+        elif rate_str == "ntsc":
+            frame_rate = 30.0
+        elif rate_str == "show":
+            frame_rate = 48.0
+        elif rate_str == "palf":
+            frame_rate = 50.0
+        elif rate_str == "ntscf":
+            frame_rate = 60.0
+        elif rate_str.endswith("fps"):
+            frame_rate = float(rate_str[0:-3])
+        else:
+            raise RuntimeError("Unsupported frame rate: {0}".format(rate_str))
+        
+        return frame_rate
+    
+    def get_audio_attributes(self):
+        sound_node = mel.eval("timeControl -q -sound $gPlayBackSlider;")
+        if sound_node:
+            file_path = cmds.getAttr(f"{sound_node}.filename")
+            file_info = QtCore.QFileInfo(file_path)
+            if file_info.exists():
+                offset = cmds.getAttr(f"{sound_node}.offset")
+                return (file_path, offset)
+            
+        else:
+            return (None, None)
+
+    def get_audio_offset_in_sec(self, start_frame, audio_frame_offset, frame_rate):
+        return (start_frame - audio_frame_offset) / frame_rate
+
+    def remove_temp_dir(self, temp_dir_path):
+        playblast_dir = QtCore.QDir(temp_dir_path)
+        playblast_dir.setNameFilters(["*.png"])
+        playblast_dir.setFilter(QtCore.QDir.Files)
+
+        for file in playblast_dir.entryList():
+            playblast_dir.remove(file)
+
+        if not playblast_dir.rmdir(temp_dir_path):
+            self.log_warning(f"Failed to remove temporary directory: {temp_dir_path}")
+
+    def open_in_viewer(self, path):
+        if not os.path.exists(path):
+            self.log_error(f"Failed to open in viewer. File does not exists : {path}")
+            return
+        
+        if self._container_format in ("mov", "mp4") and cmds.optionVar(exists="PlayblastCmdQuicktime"):
+            executable_path = cmds.optionVar(q="PlayblastCmdQuicktime")
+            if executable_path:
+                QtCore.QProcess.startDetached(executable_path, [path])
+                return
+            
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
 
     def set_resolution(self, resolution):
-
         self._resolution_preset = None
 
         try:
@@ -162,17 +266,6 @@ class BPlayblast(QtCore.QObject):
         return self._width_height
 
     def preset_to_resolution(self, resolution_preset):
-        """_summary_
-
-        Args:
-            resolution_preset (_type_): _description_
-
-        Raises:
-            RuntimeError: _description_
-
-        Returns:
-            _type_: _description_
-        """
         if resolution_preset == "Render":
             width = cmds.getAttr("defaultResolution.width")
             height = cmds.getAttr("defaultResolution.height")
@@ -285,11 +378,6 @@ class BPlayblast(QtCore.QObject):
             self.log_error("Failed to get active view")
 
     def get_scene_name(self):
-        """_summary_
-
-        Returns:
-            _type_: _description_
-        """
         scene_name = cmds.file(q=True, sceneName=True, shortName=True)
         if scene_name:
             scene_name = os.path.splitext(scene_name)[0]
@@ -302,21 +390,12 @@ class BPlayblast(QtCore.QObject):
         return cmds.workspace(q=True, rootDirectory=True)
 
     def resolve_output_directory_path(self, dir_path):
-        """_summary_
-
-        Args:
-            dir_path (_type_): _description_
-
-        Returns:
-            _type_: _description_
-        """
         if "{project}" in dir_path:
             dir_path = dir_path.replace("{project}", self.get_project_dir_path())
 
         return dir_path
     
     def resolve_output_filename(self, filename):
-
         if "{scene}" in filename:
             filename = filename.replace("{scene}", self.get_scene_name())
 
@@ -342,7 +421,6 @@ class BPlayblast(QtCore.QObject):
         return self._container_format != "Image"
 
     def execute(self, output_dir, filename, padding=4, show_ornaments=True, show_in_viewer=True, overwrite=False):
-
         if self.requires_ffmpeg() and not self.validate_ffmpeg():
             self.log_error("ffmpeg executable is not configured. See script editor for details.")
             return
@@ -435,12 +513,27 @@ class BPlayblast(QtCore.QObject):
 
         if playblast_failed:
             return
+        
+        if self.requires_ffmpeg():
+            source_path = f"{playblast_output_dir}/{filename}.%0{padding}d.png"
+
+            if self._encoder == "h264":
+                self.encode_h264(source_path, output_path, start_frame)
+            else:
+                self.log_error(f"Encoding failed. Unsupported encoder ({self._encoder}) for container ({self._container_format})")
+                self.remove_temp_dir(playblast_output_dir)
+                return
+            
+            self.remove_temp_dir(playblast_output_dir)
+
+            if show_in_viewer:
+                self.open_in_viewer(output_path)
 
 
 if __name__ == "__main__":
 
     playblast = BPlayblast()
-    playblast.set_camera("top")
-    playblast.set_encoding("Image", "jpg")
-    playblast.execute("E:/BASA", "output")
+    playblast.set_camera("rendercam")
+    #playblast.set_encoding("Image", "jpg")
+    playblast.execute("E:/BASA/test", "output")
 
