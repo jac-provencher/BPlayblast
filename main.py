@@ -24,6 +24,8 @@ class BPlayblast(QtCore.QObject):
 
     DEFAULT_PADDING = 4
 
+    DEFAULT_VISIBILITY = "Viewport"
+
     RESOLUTION_LOOKUP = {
         "Render":(),
         "HD 1080": (1920, 1080),
@@ -58,6 +60,52 @@ class BPlayblast(QtCore.QObject):
         "faster",
         "ultrafast"
     ]
+
+    VIEWPORT_VISIBILITY_LOOKUP = [
+        ["Controllers", "controllers"],
+        ["NURBS Curves", "nurbsCurves"],
+        ["NURBS Surfaces", "nurbsSurfaces"],
+        ["NURBS CVs", "cv"],
+        ["NURBS Hulls", "hulls"],
+        ["Polygons", "polymeshes"],
+        ["Subdiv Surfaces", "subdivSurfaces"],
+        ["Planes", "planes"],
+        ["Lights", "lights"],
+        ["Cameras", "cameras"],
+        ["Image Planes", "imagePlane"],
+        ["Joints", "joints"],
+        ["IK Handles", "ikHandles"],
+        ["Deformers", "deformers"],
+        ["Dynamics", "dynamics"],
+        ["Particle Instancers", "particleInstancers"],
+        ["Fluids", "fluids"],
+        ["Hair Systems", "hairSystems"],
+        ["Follicles", "follicles"],
+        ["nCloths", "nCloths"],
+        ["nParticles", "nParticles"],
+        ["nRigids", "nRigids"],
+        ["Dynamic Constraints", "dynamicConstraints"],
+        ["Locators", "locators"],
+        ["Dimensions", "dimensions"],
+        ["Pivots", "pivots"],
+        ["Handles", "handles"],
+        ["Texture Placements", "textures"],
+        ["Strokes", "strokes"],
+        ["Motion Trails", "motionTrails"],
+        ["Plugin Shapes", "pluginShapes"],
+        ["Clip Ghosts", "clipGhosts"],
+        ["Grease Pencil", "greasePencils"],
+        ["Grid", "grid"],
+        ["HUD", "hud"],
+        ["Hold-Outs", "hos"],
+        ["Selection Highlighting", "sel"],
+    ]
+
+    VIEWPORT_VISIBILITY_PRESET = {
+        "Viewport": [],
+        "Geo": ["NURBS Surfaces", "Polygons"],
+        "Dynamics": ["NURBS Surfaces", "Polygons", "Dynamics", "Fluids", "nParticles"]
+    }
 
     output_logged = QtCore.Signal(str)
 
@@ -388,6 +436,37 @@ class BPlayblast(QtCore.QObject):
 
     def get_project_dir_path(self):
         return cmds.workspace(q=True, rootDirectory=True)
+    
+    def get_viewport_visibility(self):
+        model_panel = self.get_viewport_panel()
+        if not model_panel:
+            self.log_error("Failed to get viewport visibility. A viewport is not active")
+            return None
+        
+        viewport_visibility = []
+        try:
+            for item in BPlayblast.VIEWPORT_VISIBILITY_LOOKUP:
+                kwargs = {item[1]: True}
+                viewport_visibility.append(cmds.modelEditor(model_panel, q=True, **kwargs))
+        except:
+            traceback.print_exc()
+            self.log_error("Failed to get active viewport visibility. See script editor.")
+            return None
+        
+        return viewport_visibility
+
+    def set_viewport_visibility(self, model_editor, visibility_flags):
+        cmds.modelEditor(model_editor, e=True, **visibility_flags)
+
+    def create_viewport_visibility_flags(self, visibility_data):
+        visibility_flags = {}
+
+        data_index = 0
+        for item in BPlayblast.VIEWPORT_VISIBILITY_LOOKUP:
+            visibility_flags[item[1]] = visibility_data
+            data_index += 1
+
+        return visibility_flags
 
     def resolve_output_directory_path(self, dir_path):
         if "{project}" in dir_path:
